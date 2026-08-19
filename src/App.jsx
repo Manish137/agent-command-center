@@ -1,207 +1,332 @@
-import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Briefcase, Terminal, Cpu, RefreshCw, Layers, Sparkles, FolderDown, FileText } from 'lucide-react';
-import MetricsOverview from './components/MetricsOverview';
-import FleetGrid from './components/FleetGrid';
-import JobHunterTab from './components/JobHunterTab';
-import LogTerminal from './components/LogTerminal';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import './index.css';
+
+const API = 'http://localhost:3001/api';
+
+function formatUptime(seconds) {
+  if (!seconds) return '—';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
+  return `${(bytes / 1073741824).toFixed(1)} GB`;
+}
+
+function formatTime(iso) {
+  if (!iso) return 'Never';
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = now - d;
+  if (diff < 60000) return 'Just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return d.toLocaleDateString();
+}
+
+function classifyLog(line) {
+  if (line.includes('[stderr]') || line.includes('ERROR') || line.includes('❌')) return 'error';
+  if (line.includes('✅') || line.includes('✔') || line.includes('🎉') || line.includes('success')) return 'success';
+  if (line.includes('📡') || line.includes('🔍') || line.includes('📊') || line.includes('STARTING')) return 'info';
+  if (line.includes('[stdout]')) return 'stdout';
+  return '';
+}
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('fleet'); // fleet, jobs, logs, outputs
   const [agents, setAgents] = useState([]);
-  const [jobs, setJobs] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [system, setSystem] = useState({});
+  const [selectedAgent, setSelectedAgent] = useState(null);
   const [logs, setLogs] = useState([]);
-  const [metrics, setMetrics] = useState(null);
-  const [systemStats, setSystemStats] = useState(null);
-  const [outputFiles, setOutputFiles] = useState([]);
+  const [outputs, setOutputs] = useState([]);
+  const [viewingFile, setViewingFile] = useState(null);
+  const [loading, setLoading] = useState({});
+  const logEndRef = useRef(null);
 
-  const fetchData = async () => {
+  // Fetch agents + summary + system
+  const refresh = useCallback(async () => {
     try {
-      const [agentsRes, jobsRes, logsRes, metricsRes, statsRes, outputsRes] = await Promise.all([
-        fetch('/api/agents').then(r => r.json()),
-        fetch('/api/jobs').then(r => r.json()),
-        fetch('/api/logs').then(r => r.json()),
-        fetch('/api/metrics').then(r => r.json()),
-        fetch('/api/system-stats').then(r => r.json()),
-        fetch('/api/outputs').then(r => r.json())
+      const [agRes, sumRes, sysRes] = await Promise.all([
+        fetch(`${API}/agents`).then(r => r.json()),
+        fetch(`${API}/summary`).then(r => r.json()),
+        fetch(`${API}/system`).then(r => r.json()),
       ]);
-
-      if (agentsRes.success) setAgents(agentsRes.agents);
-      if (jobsRes.success) setJobs(jobsRes.jobs);
-      if (logsRes.success) setLogs(logsRes.logs);
-      if (metricsRes.success) setMetrics(metricsRes.metrics);
-      if (statsRes.success) setSystemStats(statsRes.stats);
-      if (outputsRes.success) setOutputFiles(outputsRes.files);
-    } catch (err) {
-      console.error('Error connecting to local orchestrator API:', err);
+      if (agRes.success) setAgents(agRes.agents);
+      if (sumRes.success) setSummary(sumRes.summary);
+      if (sysRes.success) setSystem(sysRes.system);
+    } catch (e) {
+      console.error('Fetch error:', e);
     }
-  };
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 1000); // Fast 1-second live telemetry polling
-    return () => clearInterval(interval);
   }, []);
 
-  const handleAgentAction = async (id, action) => {
+  // Auto-refresh every 2 seconds
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(refresh, 2000);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  // Fetch logs + outputs for selected agent
+  useEffect(() => {
+    if (!selectedAgent) return;
+    const fetchDetail = async () => {
+      try {
+        const [logRes, outRes] = await Promise.all([
+          fetch(`${API}/agents/${selectedAgent}/logs?lines=200`).then(r => r.json()),
+          fetch(`${API}/agents/${selectedAgent}/outputs`).then(r => r.json()),
+        ]);
+        if (logRes.success) setLogs(logRes.logs);
+        if (outRes.success) setOutputs(outRes.files);
+      } catch (e) {}
+    };
+    fetchDetail();
+    const interval = setInterval(fetchDetail, 2000);
+    return () => clearInterval(interval);
+  }, [selectedAgent]);
+
+  // Auto-scroll logs
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  const startAgent = async (id, e) => {
+    e?.stopPropagation();
+    setLoading(l => ({ ...l, [id]: true }));
     try {
-      await fetch(`/api/agents/${id}/action`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action })
-      });
-      fetchData();
-    } catch (err) {
-      console.error('Action failed:', err);
-    }
+      await fetch(`${API}/agents/${id}/start`, { method: 'POST' });
+    } catch (e) {}
+    setTimeout(() => {
+      refresh();
+      setLoading(l => ({ ...l, [id]: false }));
+    }, 500);
   };
 
-  const handleSearchJobs = async (query, location, minSalary) => {
+  const stopAgent = async (id, e) => {
+    e?.stopPropagation();
+    setLoading(l => ({ ...l, [id]: true }));
     try {
-      await fetch('/api/jobs/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, location, minSalary })
-      });
-      fetchData();
-    } catch (err) {
-      console.error('Search trigger failed:', err);
-    }
+      await fetch(`${API}/agents/${id}/stop`, { method: 'POST' });
+    } catch (e) {}
+    setTimeout(() => {
+      refresh();
+      setLoading(l => ({ ...l, [id]: false }));
+    }, 500);
   };
 
-  const handleApplyJob = async (jobId) => {
+  const viewFile = async (agentId, fileName) => {
     try {
-      const res = await fetch('/api/jobs/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId })
-      }).then(r => r.json());
-      fetchData();
-      return res;
-    } catch (err) {
-      console.error('Apply trigger failed:', err);
-    }
+      const res = await fetch(`${API}/agents/${agentId}/output-file?name=${encodeURIComponent(fileName)}`);
+      const data = await res.json();
+      if (data.success) setViewingFile({ name: fileName, content: data.content });
+    } catch (e) {}
   };
+
+  const selectedAgentData = agents.find(a => a.id === selectedAgent);
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
-      {/* Sidebar */}
-      <aside style={{ width: '260px', background: 'var(--bg-secondary)', borderRight: '1px solid var(--border-color)', padding: '24px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '36px', paddingLeft: '8px' }}>
-            <div style={{ width: '36px', height: '36px', borderRadius: '10px', background: 'linear-gradient(135deg, #6366f1, #06b6d4)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white' }}>
-              <Cpu size={22} />
-            </div>
-            <div>
-              <h1 className="heading-font" style={{ fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.5px' }}>ApexAgent</h1>
-              <span style={{ fontSize: '0.7rem', color: 'var(--accent-cyan)', fontWeight: 600, letterSpacing: '1px' }}>REAL ENGINE</span>
-            </div>
+    <div className="app">
+      {/* Header */}
+      <header className="header">
+        <div className="header-left">
+          <div className="header-logo">⚡ Agent Command Center</div>
+          <span className="header-badge">REAL ENGINE</span>
+        </div>
+        <div className="header-right">
+          <div className="system-chip">
+            <span className="dot" />
+            {system.hostname || '...'} • {system.cpuCores || '?'} cores • {system.memUsedPercent || '?'}% RAM
           </div>
+        </div>
+      </header>
 
-          <nav style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <button 
-              className="btn" 
-              style={{ justifyContent: 'flex-start', background: activeTab === 'fleet' ? 'rgba(99, 102, 241, 0.15)' : 'transparent', color: activeTab === 'fleet' ? 'var(--text-main)' : 'var(--text-muted)', border: activeTab === 'fleet' ? '1px solid var(--border-glow)' : '1px solid transparent', padding: '12px 16px' }}
-              onClick={() => setActiveTab('fleet')}
-            >
-              <LayoutDashboard size={18} style={{ color: activeTab === 'fleet' ? 'var(--accent-primary)' : 'inherit' }} />
-              Agent Fleet Matrix
-            </button>
-
-            <button 
-              className="btn" 
-              style={{ justifyContent: 'flex-start', background: activeTab === 'jobs' ? 'rgba(99, 102, 241, 0.15)' : 'transparent', color: activeTab === 'jobs' ? 'var(--text-main)' : 'var(--text-muted)', border: activeTab === 'jobs' ? '1px solid var(--border-glow)' : '1px solid transparent', padding: '12px 16px' }}
-              onClick={() => setActiveTab('jobs')}
-            >
-              <Briefcase size={18} style={{ color: activeTab === 'jobs' ? 'var(--accent-cyan)' : 'inherit' }} />
-              Job Hunt & Apply Hub
-            </button>
-
-            <button 
-              className="btn" 
-              style={{ justifyContent: 'flex-start', background: activeTab === 'logs' ? 'rgba(99, 102, 241, 0.15)' : 'transparent', color: activeTab === 'logs' ? 'var(--text-main)' : 'var(--text-muted)', border: activeTab === 'logs' ? '1px solid var(--border-glow)' : '1px solid transparent', padding: '12px 16px' }}
-              onClick={() => setActiveTab('logs')}
-            >
-              <Terminal size={18} style={{ color: activeTab === 'logs' ? 'var(--accent-emerald)' : 'inherit' }} />
-              Live Process Telemetry
-            </button>
-
-            <button 
-              className="btn" 
-              style={{ justifyContent: 'flex-start', background: activeTab === 'outputs' ? 'rgba(99, 102, 241, 0.15)' : 'transparent', color: activeTab === 'outputs' ? 'var(--text-main)' : 'var(--text-muted)', border: activeTab === 'outputs' ? '1px solid var(--border-glow)' : '1px solid transparent', padding: '12px 16px' }}
-              onClick={() => setActiveTab('outputs')}
-            >
-              <FolderDown size={18} style={{ color: activeTab === 'outputs' ? 'var(--accent-amber)' : 'inherit' }} />
-              Output Artifacts ({outputFiles.length})
-            </button>
-          </nav>
+      <main className="main">
+        {/* Stats */}
+        <div className="stats-bar">
+          <div className="stat-card">
+            <div className="stat-label">Total Agents</div>
+            <div className="stat-value blue">{summary.totalAgents || 0}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Running Now</div>
+            <div className="stat-value green">{summary.runningAgents || 0}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Total Runs</div>
+            <div className="stat-value amber">{summary.totalRuns || 0}</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Output Files</div>
+            <div className="stat-value purple">{summary.totalOutputFiles || 0}</div>
+          </div>
         </div>
 
-        <div className="glass-panel" style={{ padding: '16px', background: 'rgba(255,255,255,0.02)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', fontSize: '0.8rem', fontWeight: 600 }}>
-            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }}></span>
-            Real Process Engine Active
-          </div>
-          <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Native Node.js process & FS integration on Port 3001</p>
+        {/* Agent Grid */}
+        <div className="section-title">🤖 Agent Fleet</div>
+        <div className="agent-grid">
+          {agents.map(agent => (
+            <div
+              key={agent.id}
+              className={`agent-card ${agent.status}`}
+              onClick={() => { setSelectedAgent(agent.id); setViewingFile(null); }}
+            >
+              <div className="agent-header">
+                <div className="agent-name">{agent.name}</div>
+                <span className={`agent-status ${agent.status}`}>
+                  {agent.status === 'running' ? '● Running' : '○ Stopped'}
+                </span>
+              </div>
+              <div className="agent-desc">{agent.description}</div>
+              <div className="agent-meta">
+                <span>📂 {agent.category}</span>
+                {agent.status === 'running' && <span>⏱ {formatUptime(agent.uptime)}</span>}
+                {agent.pid && <span>PID {agent.pid}</span>}
+                {agent.totalRuns > 0 && <span>🔄 {agent.totalRuns} runs</span>}
+                <span>🕐 {formatTime(agent.lastRun)}</span>
+              </div>
+              <div className="agent-actions">
+                {agent.status === 'running' ? (
+                  <button className="btn btn-stop" onClick={(e) => stopAgent(agent.id, e)} disabled={loading[agent.id]}>
+                    ⏹ Stop
+                  </button>
+                ) : (
+                  <button className="btn btn-start" onClick={(e) => startAgent(agent.id, e)} disabled={loading[agent.id]}>
+                    ▶ Start
+                  </button>
+                )}
+                <button className="btn btn-secondary" onClick={() => { setSelectedAgent(agent.id); setViewingFile(null); }}>
+                  📋 Details
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-      </aside>
 
-      {/* Main Content Area */}
-      <main style={{ flex: 1, padding: '32px 40px', overflowY: 'auto' }}>
-        {/* Header Bar */}
-        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px' }}>
-          <div>
-            <h1 className="heading-font gradient-text" style={{ fontSize: '2rem', fontWeight: 800 }}>
-              {activeTab === 'fleet' && 'Agent Orchestration Fleet'}
-              {activeTab === 'jobs' && 'Job Hunting & Application Suite'}
-              {activeTab === 'logs' && 'Live Console Telemetry'}
-              {activeTab === 'outputs' && 'Local Generated Output Artifacts'}
-            </h1>
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Real-time process execution, SHA-256 checksum verification, and live web job scraping.
-            </p>
+        {/* System Info */}
+        <div className="section-title">🖥 System Monitor</div>
+        <div className="system-grid">
+          <div className="system-item">
+            <div className="label">CPU</div>
+            <div className="value">{system.cpuCores || '?'} cores</div>
+            <div className="label" style={{ marginTop: 4 }}>{(system.cpuModel || '').split('@')[0]?.trim()}</div>
           </div>
+          <div className="system-item">
+            <div className="label">Memory</div>
+            <div className="value" style={{ color: (system.memUsedPercent || 0) > 80 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+              {system.memUsedPercent || 0}% used
+            </div>
+            <div className="label" style={{ marginTop: 4 }}>
+              {formatBytes(system.memFree)} free / {formatBytes(system.memTotal)}
+            </div>
+          </div>
+          <div className="system-item">
+            <div className="label">Server</div>
+            <div className="value">PID {system.serverPid || '?'}</div>
+            <div className="label" style={{ marginTop: 4 }}>
+              Node {system.nodeVersion} • {system.serverMemMB || '?'} MB RSS
+            </div>
+          </div>
+        </div>
+      </main>
 
-          <button className="btn btn-secondary" onClick={fetchData}>
-            <RefreshCw size={16} /> Sync Process Telemetry
-          </button>
-        </header>
+      {/* Detail Panel */}
+      {selectedAgent && (
+        <div className="detail-overlay" onClick={() => setSelectedAgent(null)}>
+          <div className="detail-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="detail-header">
+              <h2>{selectedAgentData?.name || selectedAgent}</h2>
+              <button className="close-btn" onClick={() => setSelectedAgent(null)}>✕</button>
+            </div>
+            <div className="detail-body">
+              {/* Controls */}
+              <div className="agent-actions">
+                {selectedAgentData?.status === 'running' ? (
+                  <button className="btn btn-stop" onClick={() => stopAgent(selectedAgent)}>⏹ Stop Agent</button>
+                ) : (
+                  <button className="btn btn-start" onClick={() => startAgent(selectedAgent)}>▶ Start Agent</button>
+                )}
+              </div>
 
-        {/* Telemetry Cards */}
-        <MetricsOverview metrics={metrics} />
-
-        {/* Tab Views */}
-        {activeTab === 'fleet' && <FleetGrid agents={agents} onAgentAction={handleAgentAction} systemStats={systemStats} />}
-        {activeTab === 'jobs' && <JobHunterTab jobs={jobs} onSearchJobs={handleSearchJobs} onApplyJob={handleApplyJob} />}
-        {activeTab === 'logs' && <LogTerminal logs={logs} />}
-        
-        {activeTab === 'outputs' && (
-          <div className="glass-panel" style={{ padding: '24px' }}>
-            <h3 className="heading-font" style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '16px' }}>Generated Output Files on Local Disk</h3>
-            {outputFiles.length === 0 ? (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>No output files generated yet. Run the Cloud Data Migration Agent or Job Applier to create real manifest and markdown documents!</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {outputFiles.map((file, i) => (
-                  <div key={i} style={{ background: 'rgba(0,0,0,0.3)', padding: '14px', borderRadius: '10px', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <FileText style={{ color: 'var(--accent-cyan)' }} size={20} />
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{file.name}</div>
-                        <div className="mono-font" style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '2px' }}>
-                          Path: {file.path}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                      {(file.sizeBytes / 1024).toFixed(1)} KB | {file.createdAt}
+              {/* Agent Info */}
+              <div className="detail-section">
+                <h3>Agent Info</h3>
+                <div className="system-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                  <div className="system-item">
+                    <div className="label">Status</div>
+                    <div className="value" style={{ color: selectedAgentData?.status === 'running' ? 'var(--accent-green)' : 'var(--text-muted)' }}>
+                      {selectedAgentData?.status || '—'}
                     </div>
                   </div>
-                ))}
+                  <div className="system-item">
+                    <div className="label">PID</div>
+                    <div className="value">{selectedAgentData?.pid || '—'}</div>
+                  </div>
+                  <div className="system-item">
+                    <div className="label">Total Runs</div>
+                    <div className="value">{selectedAgentData?.totalRuns || 0}</div>
+                  </div>
+                  <div className="system-item">
+                    <div className="label">Last Exit Code</div>
+                    <div className="value" style={{
+                      color: selectedAgentData?.lastExitCode === 0 ? 'var(--accent-green)' :
+                             selectedAgentData?.lastExitCode === null ? 'var(--text-muted)' : 'var(--accent-red)'
+                    }}>
+                      {selectedAgentData?.lastExitCode ?? '—'}
+                    </div>
+                  </div>
+                </div>
               </div>
-            )}
+
+              {/* Live Logs */}
+              <div className="detail-section">
+                <h3>Live Logs</h3>
+                <div className="terminal">
+                  {logs.length === 0 ? (
+                    <div className="empty-state">No logs yet. Start the agent to see output.</div>
+                  ) : (
+                    logs.map((line, i) => (
+                      <div key={i} className={`log-line ${classifyLog(line)}`}>{line}</div>
+                    ))
+                  )}
+                  <div ref={logEndRef} />
+                </div>
+              </div>
+
+              {/* Output Files */}
+              <div className="detail-section">
+                <h3>Output Files ({outputs.length})</h3>
+                {outputs.length === 0 ? (
+                  <div className="empty-state">No output files yet. Run the agent to generate data.</div>
+                ) : (
+                  <div className="file-list">
+                    {outputs.map((file, i) => (
+                      <div key={i} className="file-item" onClick={() => viewFile(selectedAgent, file.name)}>
+                        <span className="file-name">📄 {file.name}</span>
+                        <span className="file-meta">{formatBytes(file.sizeBytes)} • {formatTime(file.modifiedAt)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* File Content Viewer */}
+              {viewingFile && (
+                <div className="detail-section">
+                  <h3>📄 {viewingFile.name}</h3>
+                  <div className="file-viewer">{viewingFile.content}</div>
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </main>
+        </div>
+      )}
     </div>
   );
 }
