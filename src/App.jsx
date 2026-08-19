@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import './index.css';
 
-const API = 'http://localhost:3001/api';
+const API = '/api';
 
 function formatUptime(seconds) {
   if (!seconds) return '—';
