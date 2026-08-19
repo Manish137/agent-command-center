@@ -75,6 +75,26 @@ const agentRegistry = {
     logFile: path.join(LOGS_DIR, 'migration-monitor.log'),
     outputDir: path.join(OUTPUT_DIR, 'migration'),
   },
+  'universal-wisdom': {
+    name: 'Universal Wisdom Server',
+    description: '35 wisdom traditions & 3,780 universal principles interactive platform (Port 3005).',
+    category: 'Spiritual Tech',
+    command: 'npx',
+    args: ['tsx', 'server/index.ts'],
+    cwd: path.join(SCRATCH_DIR, 'universal-wisdom'),
+    logFile: path.join(LOGS_DIR, 'universal-wisdom.log'),
+    outputDir: path.join(SCRATCH_DIR, 'universal-wisdom/server/data'),
+  },
+  'wisdom-curator': {
+    name: 'Wisdom Curator & Growth Agent',
+    description: 'Audits 35 traditions, discovers cross-philosophical links, and generates daily marketing assets.',
+    category: 'Spiritual Tech',
+    command: 'node',
+    args: [path.join(__dirname, 'agents/wisdomCurator.js')],
+    cwd: __dirname,
+    logFile: path.join(LOGS_DIR, 'wisdom-curator.log'),
+    outputDir: path.join(OUTPUT_DIR, 'wisdom'),
+  },
 };
 
 // ── Runtime State ────────────────────────────────────────────
