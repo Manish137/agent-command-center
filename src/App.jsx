@@ -136,7 +136,7 @@ export default function App() {
       {/* Header */}
       <header className="header">
         <div className="header-left">
-          <div className="header-logo">⚡ Agent Command Center</div>
+          <div className="header-logo">⚡ ManishArmy Command Center</div>
           <span className="header-badge">REAL ENGINE</span>
         </div>
         <div className="header-right">

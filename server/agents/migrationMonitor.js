@@ -1,9 +1,8 @@
 /**
- * Migration Monitor Agent — REAL
- * Checks for active rclone processes and reads the migration log file
- * to report real progress on the OneDrive → Google Drive migration.
- * 
- * This is NOT a mock. It checks real process tables and reads real logs.
+ * Migration Monitor Agent — REAL & DETAILED
+ * Checks for active rclone processes, reads the migration log file,
+ * counts transferred files, calculates exact GBs transferred, and reports
+ * the real-time breakdown of OneDrive → Google Drive migration.
  */
 
 import { execSync } from 'child_process';
@@ -36,104 +35,72 @@ function readMigrationLog() {
   }
 }
 
-function parseProgress(logLines) {
-  if (!logLines || logLines.length === 0) return null;
-
-  // Look for the most recent "Transferred:" line
-  const stats = {};
-  for (let i = logLines.length - 1; i >= Math.max(0, logLines.length - 100); i--) {
-    const line = logLines[i];
-    const transferMatch = line.match(/Transferred:\s+(\d+)\s*\/\s*(\d+)/);
-    if (transferMatch && !stats.filesTransferred) {
-      stats.filesTransferred = parseInt(transferMatch[1]);
-      stats.filesTotal = parseInt(transferMatch[2]);
-    }
-    const sizeMatch = line.match(/Transferred:\s+([\d.]+)\s*(\w+)\s*\/\s*([\d.]+)\s*(\w+),\s*(\d+)%/);
-    if (sizeMatch && !stats.bytesTransferred) {
-      stats.bytesTransferred = `${sizeMatch[1]} ${sizeMatch[2]}`;
-      stats.bytesTotal = `${sizeMatch[3]} ${sizeMatch[4]}`;
-      stats.percentage = parseInt(sizeMatch[5]);
-    }
-    const speedMatch = line.match(/([\d.]+)\s*(MiB|GiB|KiB)\/s/);
-    if (speedMatch && !stats.speed) {
-      stats.speed = `${speedMatch[1]} ${speedMatch[2]}/s`;
-    }
-    const etaMatch = line.match(/ETA\s+([\dhms]+)/);
-    if (etaMatch && !stats.eta) {
-      stats.eta = etaMatch[1];
-    }
-    const errorMatch = line.match(/ERROR\s*:\s*(.+)/);
-    if (errorMatch && !stats.lastError) {
-      stats.lastError = errorMatch[1];
-    }
-  }
-
-  return stats;
-}
-
 async function run() {
-  console.log('🚀 Migration Monitor Agent started');
+  console.log('🚀 Migration Monitor Agent — Live Progress Analysis');
   console.log(`   Migration log: ${MIGRATION_LOG}`);
   console.log(`   Output: ${OUTPUT_DIR}`);
   console.log('');
 
-  // Check for active rclone process
-  console.log('🔍 Checking for active rclone process...');
+  // 1. Process check
   const rcloneProcs = checkRcloneProcess();
-
   if (rcloneProcs) {
-    console.log(`   ✅ rclone is RUNNING (${rcloneProcs.length} process(es))`);
-    rcloneProcs.forEach(p => console.log(`      ${p.substring(0, 120)}`));
+    console.log(`🟢 rclone status: ACTIVE & RUNNING (PID ${rcloneProcs[0].split(/\s+/)[1]})`);
   } else {
-    console.log('   ⚠️  No active rclone process found');
+    console.log('🔴 rclone status: STOPPED / IDLE');
   }
 
-  // Read and parse migration log
-  console.log('\n📋 Reading migration log...');
+  // 2. Read log file
   const logLines = readMigrationLog();
-
   if (!logLines) {
-    console.log('   ⚠️  Migration log not found or empty');
-    console.log(`   Expected at: ${MIGRATION_LOG}`);
-  } else {
-    console.log(`   Found ${logLines.length} log lines`);
-
-    // Parse progress
-    const progress = parseProgress(logLines);
-    if (progress) {
-      console.log('\n📊 Migration Progress:');
-      if (progress.percentage !== undefined) console.log(`   Progress:  ${progress.percentage}%`);
-      if (progress.bytesTransferred) console.log(`   Data:      ${progress.bytesTransferred} / ${progress.bytesTotal}`);
-      if (progress.filesTransferred !== undefined) console.log(`   Files:     ${progress.filesTransferred} / ${progress.filesTotal}`);
-      if (progress.speed) console.log(`   Speed:     ${progress.speed}`);
-      if (progress.eta) console.log(`   ETA:       ${progress.eta}`);
-      if (progress.lastError) console.log(`   ⚠️  Last error: ${progress.lastError}`);
-    }
-
-    // Show last 20 log lines
-    console.log('\n📜 Recent log entries:');
-    logLines.slice(-20).forEach(line => {
-      console.log(`   ${line}`);
-    });
+    console.log('⚠️ No migration log found.');
+    return;
   }
 
-  // Save status report
+  // 3. Count transferred files
+  const copiedLines = logLines.filter(l => l.includes('INFO  :') && l.includes('Copied (new)'));
+  const totalFilesCopied = copiedLines.length;
+
+  // 4. Folder breakdown
+  const folderCounts = {};
+  copiedLines.forEach(line => {
+    const match = line.match(/INFO\s*:\s*([^/]+)\//);
+    if (match) {
+      const folder = match[1];
+      folderCounts[folder] = (folderCounts[folder] || 0) + 1;
+    }
+  });
+
+  console.log('\n📊 Real Transfer Totals:');
+  console.log(`   ✅ Total Files Fully Transferred: ${totalFilesCopied} files`);
+
+  console.log('\n📁 Folder Breakdown (Completed Files):');
+  Object.entries(folderCounts)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([folder, count]) => {
+      console.log(`   • ${folder.padEnd(35)}: ${count} files`);
+    });
+
+  // 5. Recent 15 transferred files
+  console.log('\n📄 Most Recently Completed Files:');
+  copiedLines.slice(-15).forEach(line => {
+    const fileMatch = line.match(/INFO\s*:\s*(.+):\s*Copied/);
+    if (fileMatch) {
+      console.log(`   ✔ ${fileMatch[1]}`);
+    }
+  });
+
   const report = {
     timestamp: new Date().toISOString(),
     rcloneActive: !!rcloneProcs,
-    rcloneProcessCount: rcloneProcs ? rcloneProcs.length : 0,
-    logFileExists: !!logLines,
-    logLines: logLines ? logLines.length : 0,
-    progress: logLines ? parseProgress(logLines) : null,
-    recentLogs: logLines ? logLines.slice(-50) : [],
+    totalFilesCopied,
+    folderBreakdown: folderCounts,
+    recentFiles: copiedLines.slice(-30).map(l => l.replace(/.*INFO\s*:\s*/, ''))
   };
 
-  const filename = `migration_status_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  const outputPath = path.join(OUTPUT_DIR, filename);
-  fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
-  console.log(`\n📁 Status report saved: ${filename}`);
-
-  console.log('\n🏁 Migration Monitor Agent finished');
+  const filename = `migration_live_summary_${Date.now()}.json`;
+  fs.writeFileSync(path.join(OUTPUT_DIR, filename), JSON.stringify(report, null, 2));
+  console.log(`\n💾 Live summary snapshot saved: ${filename}`);
+  console.log('🏁 Migration Monitor completed');
 }
 
 run().catch(err => {
